@@ -4,48 +4,94 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const ejs = require("ejs");
 const mongoose = require("mongoose");
-const encrypt = require("mongoose-encryption");
-const app = express();
+const session = require("express-session");
+const passport = require("passport");
+// const LocalStrategy = require('passport-local').Strategy;
+const passportLocalMongoose = require("passport-local-mongoose");
 
+//////////////////// app ////////////////////
+const app = express();
 app.set('view engine', 'ejs');
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
-///////////// mongoose ///////////////
-mongoose.connect('mongodb://localhost:27017/userDB', {useNewUrlParser: true, useUnifiedTopology: true});
+///// express-session
+app.use(session({
+  secret: "ilovenattosomuch.",
+  resave: false,
+  saveUninitialized: false
+}));
 
-const userSchema = new mongoose.Schema({
-  email: String,
-  password: String
-});
+///// passport
+app.use(passport.initialize());
+app.use(passport.session());
 
-userSchema.plugin(encrypt, { secret: process.env.SECRET,  encryptedFields: ["password"] });
+//////////////////// mongoose ////////////////////
+mongoose.connect('mongodb://localhost:27017/userDB', {useNewUrlParser: true, useUnifiedTopology: true, useCreateIndex: true});
+
+const userSchema = new mongoose.Schema({ email: String, password: String });
+
+///// passport-local-mongoose
+const options = {
+  usernameField: "email",
+  errorMessages: {
+        MissingPasswordError: 'No password was given (パスワードを入力して下さい)',
+        AttemptTooSoonError: 'Account is currently locked. Try again later',
+        TooManyAttemptsError: 'Account locked due to too many failed login attempts',
+        NoSaltValueStoredError: 'Authentication not possible. No salt value stored',
+        IncorrectPasswordError: 'Password or username are incorrect (パスワードあるいはメールアドレスが間違っています)',
+        IncorrectUsernameError: 'Password or username are incorrect (パスワードあるいはメールアドレスが間違っています)',
+        MissingUsernameError: 'No username was given (メールアドレスを入力して下さい)',
+        UserExistsError: 'A user with the given username is already registered (入力したメールアドレスは既に存在します)'
+    }
+};
+userSchema.plugin(passportLocalMongoose, options);
 
 const User = mongoose.model("User", userSchema);
 
-///////////// Routing //////////////
-app.get("/", (req, res) => { res.render("home"); });
+///// passport
+// use static authenticate method of model in LocalStrategy
+// passport.use(new LocalStrategy({ usernameField: 'email' }, User.authenticate()));
+
+// CHANGE: USE "createStrategy" INSTEAD OF "authenticate"
+passport.use(User.createStrategy());
+
+// use static serialize and deserialize of model for passport session support
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
+
+//////////////////// Routes ////////////////////
+app.get("/", (req, res) => {
+  res.render("home");
+});
 
 app.route("/login")
 .get((req, res) => {
   res.render("login");
 })
 .post((req, res) => {
-  const email = req.body.email;
-  const password = req.body.password;
-  User.findOne({ email: email }, (err, foundUser) => {
+
+  const user = new User({
+    email: req.body.email,
+    password: req.body.password
+  });
+
+  req.login(user, (err) => {
     if (!err) {
-      if (foundUser) {
-        if ( foundUser.password === password ) {
-          res.render("secrets");
-        } else {
-          res.send("Wrong password");
-        }
-      } else {
-        res.send("Wrong email");
-      }
+      console.log(user);
+      passport.authenticate("local")(req, res, () => {
+        res.redirect("/secrets");
+      });
+    } else {
+      console.error(err);
+      res.redirect("/login");
     }
   });
+});
+
+app.get("/logout", (req, res) => {
+  req.logout();
+  res.redirect("/");
 });
 
 app.route("/register")
@@ -53,23 +99,36 @@ app.route("/register")
   res.render("register");
 })
 .post((req, res) => {
-  const email = req.body.email;
-  const password = req.body.password;
-  const newUser = new User({
-    email: email,
-    password: password
+  User.register({ email: req.body.email }, req.body.password, (err, registeredUser) => {
+    if (!err) {
+      console.log(registeredUser);
+      passport.authenticate("local")(req, res, () => {
+        res.redirect("/secrets");
+      });
+    } else {
+      res.redirect("/register");
+      console.error(err.message);
+    }
   });
-  newUser.save((err, savedUser) => { if (!err) {
-    console.log("New user has been saved");
-    res.redirect("/");
-  }});
+
+});
+
+app.get("/secrets", (req, res) => {
+  console.log( req.isAuthenticated() );
+
+  if ( req.isAuthenticated() ) {
+    res.render("secrets");
+  } else {
+    res.redirect("/login");
+  }
 });
 
 app.get("/submit", (req, res) => {
   res.render("submit");
 });
 
-let port = 3000;
+//////////////////// Listen ////////////////////
+let port = 5000;
 app.listen(port, () => {
   console.log("Server started on port " + port + ".");
 });
